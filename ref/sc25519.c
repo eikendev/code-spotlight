@@ -10,16 +10,22 @@ static const crypto_uint32 L[32] =
 };
 
 /*
- * Precomputation of μ from HAC, Alg. 14.42.
- * μ = floor(b^(2k)/m)
- * Radix b = 2^64, k = 4.
+ * Precomputation of μ from HAC, algorithm. 14.42. Here we have μ =
+ * floor(b^(2k)/m) with radix b = 2^8 and k = 32. In Python, we can write
+ * ```python3
+ * def get_mu(b, k, m):
+ *     return hex((b**(2 * k)) // m)
+ *
+ * L = 0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed
+ * print(get_mu(2**8, 32, L))
+ * ```
  */
 static const crypto_uint32 mu[33] =
     { 0x1B, 0x13, 0x2C, 0x0A, 0xA3, 0xE5, 0x9C, 0xED, 0xA7, 0x29, 0x63, 0x08, 0x5D, 0x21, 0x06, 0x21,
     0xEB, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F
 };
 
-/* Whether or not `a` is less than `b`. Input must be representable in 16-bit. */
+/* Whether or not `a` is less than `b`. Inputs must be representable by 2 bytes. */
 static crypto_uint32 lt(
     crypto_uint32 a,
     crypto_uint32 b
@@ -69,14 +75,16 @@ static void reduce_add_sub(
      * underflowed, we can actually leave `result` as is, given our assumption
      * that `result` is already "close" to the reduced element. Note that in
      * this case, the mask is set to all zeros. Hence, `result` will not be
-     * changed. */
-    /* TODO: What exactly does the loop do if mask is all ones? */
+     * changed. If mask is all ones, the inner XOR here can be seen as
+     * calculating the "difference" between subtraction and result. Using the
+     * mask, we conditionally apply that "difference", i.e., we write
+     * subtraction into result. */
     for (i = 0; i < 32; i++)
         result->v[i] ^= mask & (result->v[i] ^ subtraction[i]);
 }
 
 /* Reduce coefficients of x before calling barrett_reduce */
-/* See HAC, Alg. 14.42. */
+/* See HAC, algorithm 14.42. */
 static void barrett_reduce(
     sc25519 *r,
     const crypto_uint32 x[64]
@@ -226,7 +234,7 @@ void sc25519_add(
 {
     int i, carry;
 
-    /* Multiply digits pairwise, store the carry for each pair. */
+    /* Add digits pairwise, store the carry for each pair. */
     for (i = 0; i < 32; i++)
         result->v[i] = x->v[i] + y->v[i];
 
@@ -273,39 +281,73 @@ void sc25519_mul(
     barrett_reduce(result, result_with_carry);
 }
 
-/* TODO: Understand and document sc25519_window3(). */
-/* Convert s into a representation of the form \sum_{i=0}^{84}r[i]2^3 with r[i]
- * in {-4,...,3} */
+/* Convert `s` into a representation similar to radix 2^3. The difference is
+ * that the digits will be stored as numbers in [-4,...,3], so that the sum
+ * over all r[i] * 8^i equals `s`. Since a number is represented by 255 bits,
+ * and this representation uses 3 bits per digit, we need 255 / 3 = 85 digits
+ * to represent a number. Note that this function runs in constant time.*/
 void sc25519_window3(
     signed char r[85],
     const sc25519 *s
 )
 {
-    char carry;
     int i;
 
+    /* As a first step, we convert to the radix 2^3, but without signed digits.
+     * Before we had 32 digits in radix 2^8, now there are 85 in radix 2^3.
+     * Note that we can fit 3 digits from s (which are 3 * 8 = 24 bits) into 8
+     * digits in r (which are 8 * 3 = 24 bits). To illustrate, the bit
+     * transformation can be described like this:
+     * [ 000 000 100 111 111 221 222 222 ], where `0` indicates a bit from the
+     * first digits of s, `1` a bit from the second, and `2` a bit from the
+     * third digit respectively. Also note that the individual digits are
+     * written in a way so the most-significant bit is on the very left. Taking
+     * the third digit, `100`, as an example: it contains the two most
+     * significant bits of the first digit of s, and the least significant bit
+     * of the second digit of s. The following loop will process the first 10
+     * pairs, i.e., the first 30 bytes of s. Afterwards, there are only 15 bits
+     * left. These can be fit into five digits in r. The last bit of the last
+     * digit in s is not used. */
+
     for (i = 0; i < 10; i++) {
-        r[8 * i + 0] = s->v[3 * i + 0] & 7;
-        r[8 * i + 1] = (s->v[3 * i + 0] >> 3) & 7;
-        r[8 * i + 2] = (s->v[3 * i + 0] >> 6) & 7;
-        r[8 * i + 2] ^= (s->v[3 * i + 1] << 2) & 7;
-        r[8 * i + 3] = (s->v[3 * i + 1] >> 1) & 7;
-        r[8 * i + 4] = (s->v[3 * i + 1] >> 4) & 7;
-        r[8 * i + 5] = (s->v[3 * i + 1] >> 7) & 7;
-        r[8 * i + 5] ^= (s->v[3 * i + 2] << 1) & 7;
-        r[8 * i + 6] = (s->v[3 * i + 2] >> 2) & 7;
-        r[8 * i + 7] = (s->v[3 * i + 2] >> 5) & 7;
+        r[8 * i + 0] = s->v[3 * i + 0] & 7; // `000`
+        r[8 * i + 1] = (s->v[3 * i + 0] >> 3) & 7; // `000`
+        r[8 * i + 2] = (s->v[3 * i + 0] >> 6) & 7; // `X00`
+        r[8 * i + 2] ^= (s->v[3 * i + 1] << 2) & 7; // `100`
+        r[8 * i + 3] = (s->v[3 * i + 1] >> 1) & 7; // `111`
+        r[8 * i + 4] = (s->v[3 * i + 1] >> 4) & 7; // `111`
+        r[8 * i + 5] = (s->v[3 * i + 1] >> 7) & 7; // `XX1`
+        r[8 * i + 5] ^= (s->v[3 * i + 2] << 1) & 7; // `221`
+        r[8 * i + 6] = (s->v[3 * i + 2] >> 2) & 7; // `222`
+        r[8 * i + 7] = (s->v[3 * i + 2] >> 5) & 7; // `222`
     }
 
-    r[8 * i + 0] = s->v[3 * i + 0] & 7;
-    r[8 * i + 1] = (s->v[3 * i + 0] >> 3) & 7;
-    r[8 * i + 2] = (s->v[3 * i + 0] >> 6) & 7;
-    r[8 * i + 2] ^= (s->v[3 * i + 1] << 2) & 7;
-    r[8 * i + 3] = (s->v[3 * i + 1] >> 1) & 7;
-    r[8 * i + 4] = (s->v[3 * i + 1] >> 4) & 7;
+    r[8 * i + 0] = s->v[3 * i + 0] & 7; // `000`
+    r[8 * i + 1] = (s->v[3 * i + 0] >> 3) & 7; // `000`
+    r[8 * i + 2] = (s->v[3 * i + 0] >> 6) & 7; // `X00`
+    r[8 * i + 2] ^= (s->v[3 * i + 1] << 2) & 7; // `100`
+    r[8 * i + 3] = (s->v[3 * i + 1] >> 1) & 7; // `111`
+    r[8 * i + 4] = (s->v[3 * i + 1] >> 4) & 7; // `111`
 
-    /* Making it signed */
-    carry = 0;
+    /* Next, we need to adjust the range of the individual digits. Since we
+     * cannot simply subtract the digits by some value, as that would change
+     * the total value of the number, we need to take care of the carry.
+     * Specifically, we check whether the digit has the most significant bit
+     * set (the third bit, due to radix 2^8). If that is the case, we subtract
+     * 8 from it. For instance, a digit with the value 4 will be transformed
+     * into -4. Let's show why this works by example: Assume that before this
+     * transformation, we only had the digits [ 0 4 0 ]. As a decimal number,
+     * that is 0*8^0 + 4*8^1 + 0*8^2 = 32. After our transformation, we have
+     * the digits [ 0 -4 1 ], because the onderflow was carried to the next
+     * digit. The number is still the same, because 0*8^0 - 4*8^1 + 1*8^2 = 32.
+     * Why does this work? Let's replace the value of the digit with the symbol
+     * n, and the index 1 with i. So, before we had n*8^i = 4*8^1. After the
+     * transformation, we are left with (n-8)*8^i + 8^(i+1) = -4*8^1 + 1*8^2.
+     * It holds that n*8^i = (n-8)*8^i + 8^(i+1), because 0 = (-8)*8^i +
+     * 8^(i+1). */
+
+    char carry = 0;
+
     for (i = 0; i < 84; i++) {
         r[i] += carry;
         r[i + 1] += r[i] >> 3;
@@ -317,7 +359,7 @@ void sc25519_window3(
     r[84] += carry;
 }
 
-/* TODO: Understand and document sc25519_2interleave2(). */
+/* TODO: Add explanation for this function. */
 void sc25519_2interleave2(
     unsigned char r[127],
     const sc25519 *s1,

@@ -84,8 +84,8 @@ int crypto_sign(
 
     /* Sign: Step 6 */
 
-    /* The signed messages is (R || S || M). We are left with writing S into
-     * the buffer. */
+    /* The signed message is (R || S || M). We are left with writing S into the
+     * buffer. */
     sc25519_to32bytes(signed_message + 32, S);
 
     /* Write the output length. This is not described in the RFC, since it's

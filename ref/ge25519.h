@@ -4,6 +4,10 @@
 #include "fe25519.h"
 #include "sc25519.h"
 
+/* The representation using extended coordinates. It must hold that x = X/Z,
+ * y = Y/Z, and x*y = T/Z. Note that for our curve, we have a=-1, which allows
+ * for faster arithmetic than in the general case. See
+ * https://www.hyperelliptic.org/EFD/g1p/auto-twisted-extended-1.html. */
 typedef struct {
     fe25519 x;
     fe25519 y;
