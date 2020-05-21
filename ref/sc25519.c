@@ -108,15 +108,19 @@ static void barrett_reduce(
     crypto_uint32 *q3 = q2 + 33;
     crypto_uint32 carry;
 
-    /* Calculate q3. Note that we do not explicitly calculate q2, i.e., the
-     * result in q2 is not equivalent to Step 1 from the book. Instead, we
-     * directly divide by b^(k+1) and take the floor of the result. */
+    /* Next we calculate q3. First, you might be wondering why there is no q1.
+     * Instead of calculating q1 explicitly, we only consider x[31:], which is
+     * equivalent to using the q1 from the book. Further note that the q2 here
+     * does not strictly equal the q2 from the book. Here, q2 is used as a
+     * larger buffer, where the least-significant digits are always zero. */
     for (i = 0; i < 33; i++)
         for (j = 0; j < 33; j++)
             if (i + j >= 31)
                 q2[i + j] += mu[i] * x[j + 31];
 
-    /* TODO: Why is this needed, considering that we want to round down? */
+    /* From step 2 onwards, we will only operate on q3. Since we have
+     * q3 = q2 + 33 (reflecting q3 <- ⌊q2 / b^(k+1)⌋ from the book), we need to
+     * carry any overflowed digits into q3. */
     carry = q2[31] >> 8;
     q2[32] += carry;
     carry = q2[32] >> 8;
@@ -126,7 +130,7 @@ static void barrett_reduce(
 
     crypto_uint32 r1[33];
 
-    /* TODO: Where did the reduction go? */
+    /* The reduction mod b^(k+1) is equivalent to disregarding x[33:63]. */
     for (i = 0; i < 33; i++)
         r1[i] = x[i];
 

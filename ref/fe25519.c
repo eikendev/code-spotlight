@@ -1,5 +1,7 @@
 #include "fe25519.h"
 
+/* Operations in a finite field modulo p. Here, p is 2^255-19. */
+
 /* Whether or not `a` is equal to `b`. Inputs must be representable by 2 bytes. */
 static crypto_uint32 equal(
     crypto_uint32 a,
@@ -55,8 +57,7 @@ static crypto_uint32 times38(
     return (a << 5) + (a << 2) + (a << 1);
 }
 
-/* Reduce `r` modulo 2^255 after an addition or subtraction. */
-/* TODO: Why do we iterate four times here? */
+/* Paritally reduce `r` modulo p into [0,2^255] after an addition or subtraction. */
 static void reduce_add_sub(
     fe25519 *r
 )
@@ -64,14 +65,23 @@ static void reduce_add_sub(
     crypto_uint32 temporary;
     int i, rep;
 
+    /* In each iterations, we take the multiples of 2^255, and substitute them
+     * by a multiple of 19. This works because 2^255 is congruent to 19 modulo
+     * p. Note that the subtraction might result in a 257-bit number, because
+     * of the constant-time implementation. This means we assume a maximum
+     * input of 2^257-1. If you play through the loop with that maximum number,
+     * you will find that you need at most four iterations to partially reduce
+     * below 2^255. */
+
     for (rep = 0; rep < 4; rep++) {
-        /* When representing a number modulo 2^255 in 32 buckets, the last
-         * bucket is capped to seven bits. Everything that does not fit into
-         * those seven bits of the last byte can be seen as belonging to a 33rd
-         * bucket, which of course does not exist. The content of the 33rd
-         * bucket would represent the multiples of 2^255. Now, since 2^255 is
-         * congruent to 19 modulo 2^255-19, we can also represent it as a
-         * multiple of 19. */
+        /* When representing a number modulo p in 32 buckets, the last bucket
+         * is capped to seven bits. Everything that does not fit into those
+         * seven bits of the last byte can be seen as containing a multiple of
+         * 2^255. In fact, the eight bit equals 2^255 on its own. Now, since
+         * 2^255 is congruent to 19 modulo p, we can also represent that bit as
+         * a multiple of 19. To generalize, if we had a 257th bit, that bit
+         * would be "worth" 2*2^255, also a multiple of 2^255. Hence, it can be
+         * represented as 2*19 in our field. */
         temporary = r->v[31] >> 7;
         r->v[31] &= 127;
         temporary = times19(temporary);
@@ -88,9 +98,16 @@ static void reduce_add_sub(
     }
 }
 
-/* Reduce `r` modulo 2^255 after a multiplication. See reduce_add_sub() for
- * details on this function. The only difference is the number of iterations. */
-/* TODO: Why do we iterate twice here? */
+/* Partially reduce `r` modulo p into [0,2^255] after a multiplication. See
+ * reduce_add_sub() for details on this function. The only difference is the
+ * number of iterations of the outer loop. This is due to different assumptions
+ * over the input. The function is only used in fe25519_mul(), where we
+ * partially reduce `r` below 2^256 before calling this reduction. This means
+ * that the input as at maximum 2^256-1. 2^255 is congruent 19 modulo p. This
+ * means if the 256th bit is set, we can unset it, and instead add 19 to the
+ * rest of the number. That essentially adds (19 - 2^255) in each iteration.
+ * For the maximum input 2^256-1, we only need to iterate twice so that the
+ * number is below 2^255. */
 static void reduce_mul(
     fe25519 *r
 )
@@ -112,31 +129,30 @@ static void reduce_mul(
     }
 }
 
-/* Reduce `r` modulo 2^255-19. This assumes that `r` has been reduced modulo
- * 2^255 and that the digits are already reduced. */
+/* Reduce `r` modulo p. This assumes that `r` in in [0, 2^255-1] and that the
+ * digits are already reduced. */
 void fe25519_freeze(
     fe25519 *r
 )
 {
     int i;
 
-    /* First we check if r is in [2^255-19,2^255-1]. Note that with reduced
-     * digits, we can hence check if all bits are set for all digits but the
-     * first. The first digit must be greater or equal to 2^8-19 = 237.
-     * Remember that we reduce modulo 2^255-19. The last byte of 2^255-19 in
-     * our representation is 2^8-19. */
+    /* First we check if r is in [p,2^255-1]. Note that with reduced digits, we
+     * can hence check if all bits are set for all digits but the first. The
+     * first digit must be greater or equal to 2^8-19 = 237. Remember that we
+     * reduce modulo p. The last byte of p in our representation is 2^8-19. */
     crypto_uint32 m = equal(r->v[31], 127);
     for (i = 30; i > 0; i--)
         m &= equal(r->v[i], 255);
     m &= ge(r->v[0], 237);
 
-    /* If r is in [2^255-19,2^255-1], then m = 1. Otherwise, m = 0. From that
+    /* If r is in [p,2^255-1], then m = 1. Otherwise, m = 0. From that
      * we build a mask. If m = 1, then -m is a mask with all ones (due to the
      * representation as Two's complement). If m = 0, m is a mask with all
      * zeros. */
     m = -m;
 
-    /* If the number is in [2^255-19,2^255-1], we now proceed by setting all
+    /* If the number is in [p,2^255-1], we now proceed by setting all
      * the digits but the first to zero. To make the last byte "wrap around"
      * when reaching the modulus, we subtract the modulus 2^8-19 = 237 from the
      * first digit. */
@@ -162,8 +178,7 @@ void fe25519_unpack(
     r->v[31] &= 127;
 }
 
-/* Converts x to the packed format. This assumes input x has been reduced
- * modulo 2^255. */
+/* Converts x to the packed format. This assumes input x is in [0,2^255-1]. */
 void fe25519_pack(
     unsigned char r[32],
     const fe25519 *x
@@ -303,23 +318,18 @@ void fe25519_sub(
     crypto_uint32 temporary[32];
 
     /* To prevent the individual buckets from underflowing, we need to make
-     * sure that the buckets are "full enough" so we can subtract both numbers
-     * (x and y) without causing an underflow. For the first bucket, we could
-     * have x = y = 2^8-19 in the "worst" case. This means, we need to
-     * initialize the bucket with 2*(2^8-19). When adding x and subtracting y
-     * in this bucket, the bucket is guaranteed not to overflow. For the last
-     * bucket, we assume the operands not to have the last bit set, which is
-     * why we initialize it with 2*(2^7-1). All the buckets inbetween deal with
-     * full-byte numbers, so they need to be filled with 2*(2^8-1) before the
-     * subtraction. But why can we just "fill" the buckets as a preparation,
-     * doesn't this yield a wrong result for the subtraction? Since we operate
-     * in a finite field, we can add p arbitrarily often. In this case, we
-     * would actually calculate 2*p-x-y. If you write down the prepared
-     * buckets, this would look like
+     * sure that the buckets are "full enough" so we can subtract y from x
+     * without causing an underflow. In the worst case, we have x=0, and
+     * y=2^255-1 (due to our partial reductions). But since we operate in a
+     * finite field, we can add p arbitrarily often! For instance, we can
+     * calculate 2*p+x-y. Even in the scenario of x=0 and y=2^255-1, this would
+     * still be a positive number. To make sure the buckets are "full enough",
+     * we prepare them so that they look like
      * [0x00fe 0x01fe 0x01fe ... 0x01fe 0x01fe 0x01da] (big-endian ordering).
-     * We also know that 2*p = 2*(2^255-19) = [0xff 0xff ... 0xff 0xff 0xda].
-     * One can easily see that when overlapping the buckets, that they sum up
-     * to 2*p. */
+     * For comparison, we have 2*p = [0xff 0xff ... 0xff 0xff 0xda]. One can
+     * easily see that when overlapping the buckets, that they sum up to 2*p.
+     * Note that depending on x and y, this could result in a 257-bit number.
+     * Our reduction needs to take care of that. */
 
     temporary[0] = x->v[0] + 0x1da; /* 0x1da = 2*(2^8-19) */
     temporary[31] = x->v[31] + 0xfe; /* 0x1fe = 2*(2^8-1) */
@@ -346,7 +356,7 @@ void fe25519_mul(
 
     /* Initialize `temporary` to zero. If we were calculating with full 32-byte
      * numbers, the multiplication could not be bound by 63 byte. But since our
-     * elements are in a field of order 2^255-19, the maximum value in the
+     * elements are in a field of order p, the maximum value in the
      * following multiplication is (2^255 - 18)^2. */
     for (i = 0; i < 63; i++)
         temporary[i] = 0;
