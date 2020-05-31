@@ -57,7 +57,7 @@ static crypto_uint32 times38(
     return (a << 5) + (a << 2) + (a << 1);
 }
 
-/* Paritally reduce `r` modulo p into [0,2^255] after an addition or subtraction. */
+/* Partially reduce `r` modulo p into [0,2^255] after an addition or subtraction. */
 static void reduce_add_sub(
     fe25519 *r
 )
@@ -65,7 +65,7 @@ static void reduce_add_sub(
     crypto_uint32 temporary;
     int i, rep;
 
-    /* In each iterations, we take the multiples of 2^255, and substitute them
+    /* In each iteration, we take the multiples of 2^255, and substitute them
      * by a multiple of 19. This works because 2^255 is congruent to 19 modulo
      * p. Note that the subtraction might result in a 257-bit number, because
      * of the constant-time implementation. This means we assume a maximum
