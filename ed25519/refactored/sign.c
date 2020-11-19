@@ -41,17 +41,17 @@ int crypto_sign(
 
     /* Sign: Step 2 */
 
-    /* We use the signed_message buffer to calculate the noce. Note that at
-     * this point, the name signed_message is misleading, snce the prefix will
+    /* We use the signed_message buffer to calculate the nonce. Note that at
+     * this point, the name signed_message is misleading, since the prefix will
      * not be part of the signed message. */
     memmove(signed_message + 64, message, message_len);
     memmove(signed_message + 32, prefix, 32);
 
-    unsigned char nonce[64];
-    crypto_hash_sha512(nonce, signed_message + 32, message_len + 32);
+    unsigned char r_digest[64];
+    crypto_hash_sha512(r_digest, signed_message + 32, message_len + 32);
 
     sc25519 r; // 64 bytes
-    sc25519_from64bytes(&r, nonce);
+    sc25519_from64bytes(&r, r_digest);
 
     /* Sign: Step 3 */
 
